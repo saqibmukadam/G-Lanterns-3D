@@ -1,0 +1,3 @@
+  -keep class com.dexterous.** { *; }
+  -keepattributes Signature
+  -keepattributes *Annotation*
