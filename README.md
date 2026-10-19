@@ -66,10 +66,9 @@ Before running the project, make sure you have:
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/G-Lanterns-3D.git
+git clone https://github.com/saqibmukadam/G-Lanterns-3D.git
 ```
 
-Replace `YOUR-USERNAME` with your actual GitHub username and ensure the repository URL matches your published repository.
 
 ### 2. Navigate to the project directory
 
