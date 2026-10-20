@@ -10,6 +10,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:permission_handler/permission_handler.dart';
+// ignore: depend_on_referenced_packages
 import 'package:webview_flutter/webview_flutter.dart' show WebViewController;
 
 void main() async {
@@ -1000,7 +1001,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   int _lastHapticWordIdx = 0;
   final ValueNotifier<double> _oathProgress = ValueNotifier<double>(0.0);
   DateTime _pressStartedAt = DateTime.now();
-  bool _preferOnDevice = true;
+  bool _preferOnDevice = false;
   Ticker? _oathTicker;
   Duration _oathLastTick = Duration.zero;
   
@@ -1650,6 +1651,50 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     return enabled;
   }
 
+  Future<bool> _ensureSpeechReady() async {
+    var micStatus = await Permission.microphone.status;
+    if (!micStatus.isGranted) {
+      micStatus = await Permission.microphone.request();
+    }
+    if (!micStatus.isGranted) return false;
+
+    if (_speechEnabled) return true;
+
+    try {
+      _speechEnabled = await _speechToText.initialize(
+        onError: (e) {
+          debugPrint("Speech error: ${e.errorMsg}");
+          if (_preferOnDevice) {
+            _preferOnDevice = false;
+          }
+        },
+        onStatus: (status) {
+          if ((status == 'notListening' || status == 'done') &&
+              _isPressing &&
+              !_oathTriggered) {
+            final id = _pressId;
+            Future.delayed(const Duration(milliseconds: 150), () {
+              if (_isPressing && id == _pressId && !_speechToText.isListening) {
+                _listenForOath(id);
+              }
+            });
+          }
+          if (status == 'notListening' && _audioKnockMode && !isListeningForOath) {
+            Future.delayed(const Duration(milliseconds: 100), () {
+              if (_audioKnockMode && !isListeningForOath && chargeLevel == 0.0) {
+                _startContinuousListening();
+              }
+            });
+          }
+        },
+      );
+    } catch (e) {
+      debugPrint("Speech init error: $e");
+      _speechEnabled = false;
+    }
+    return _speechEnabled;
+  }
+
   Future<void> _scheduleQuickChargeAlert() async {
     await _notifReady.future;
     await _ensureNotificationAccess(showMessage: false);
@@ -1759,7 +1804,8 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   }
 
   void _startContinuousListening() async {
-    if (_speechEnabled && !_speechToText.isListening) {
+    final ready = await _ensureSpeechReady();
+    if (ready && !_speechToText.isListening) {
       await _setBeepMute(true);
       await _speechToText.listen(
         onResult: (result) {},
@@ -1788,7 +1834,11 @@ class _RingChargerScreenState extends State<RingChargerScreen>
             }
           }
         },
-        listenOptions: SpeechListenOptions(cancelOnError: false, listenFor: const Duration(minutes: 60), pauseFor: const Duration(minutes: 60)),
+        listenOptions: SpeechListenOptions(
+          cancelOnError: false,
+          listenFor: const Duration(minutes: 60),
+          pauseFor: const Duration(minutes: 60),
+        ),
       );
     }
   }
@@ -1807,7 +1857,6 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     _voiceNotifier.value = 0.0;
     final id = ++_pressId;
 
-    // Initial magnetic lock-on + continuous iOS-like power battery hum while holding
     unawaited(_LanternHaptics.holdLockOn());
     _holdHapticTimer?.cancel();
     int tickCount = 0;
@@ -1818,10 +1867,8 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       }
       tickCount++;
       if (_oathTriggered) {
-        // High-energy readiness pulse once oath is 100% complete
         _LanternHaptics.toggle();
       } else if (_voiceNotifier.value <= 2.0 && tickCount % 2 == 0) {
-        // Subtle idle heartbeat hum when not actively speaking
         _LanternHaptics.spinDetent(velocity: 0.4);
       }
     });
@@ -1843,13 +1890,13 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     }
 
     _micDelayTimer?.cancel();
-    if (_speechEnabled) {
-      _micDelayTimer = Timer(const Duration(milliseconds: 150), () {
-        if (_isPressing && id == _pressId) {
-          _listenForOath(id);
-        }
-      });
-    }
+    _micDelayTimer = Timer(const Duration(milliseconds: 150), () async {
+      if (!_isPressing || id != _pressId) return;
+      final ready = await _ensureSpeechReady();
+      if (ready && _isPressing && id == _pressId) {
+        _listenForOath(id);
+      }
+    });
   }
 
   Future<void> _listenForOath(int id) async {
@@ -2654,6 +2701,22 @@ class _RingChargerScreenState extends State<RingChargerScreen>
                                       ],
                                     ),
                                   ],
+                                ),
+                              ),
+                            ]);
+
+                            // 🟢 ADDING YOUR SIGNATURE HERE
+                            menuItems.addAll([
+                              const PopupMenuDivider(height: 1),
+                              const PopupMenuItem(
+                                enabled: false,
+                                height: 35, // Keeps it compact
+                                child: Center(
+                                  child: Text(
+                                    'Developed By - Saqib Mukadam/SM Labs', 
+                                    style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold),
+                                    textAlign: TextAlign.center,
+                                  ),
                                 ),
                               ),
                             ]);
