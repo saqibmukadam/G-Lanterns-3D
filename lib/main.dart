@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
@@ -15,8 +16,8 @@ import 'package:webview_flutter/webview_flutter.dart' show WebViewController;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // 1. Lock the application strictly to Portrait mode
+
+  // Lock the application strictly to Portrait mode
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
@@ -41,6 +42,11 @@ const NotificationDetails _notificationDetails = NotificationDetails(
     importance: Importance.max,
     priority: Priority.high,
   ),
+  iOS: DarwinNotificationDetails(
+    presentAlert: true,
+    presentBadge: true,
+    presentSound: true,
+  ),
 );
 
 const NotificationDetails _depletionNotificationDetails = NotificationDetails(
@@ -52,6 +58,11 @@ const NotificationDetails _depletionNotificationDetails = NotificationDetails(
     priority: Priority.high,
     sound: RawResourceAndroidNotificationSound('ring_depletion'),
   ),
+  iOS: DarwinNotificationDetails(
+    presentAlert: true,
+    presentBadge: true,
+    presentSound: true,
+  ),
 );
 
 const NotificationDetails _rejectNotificationDetails = NotificationDetails(
@@ -62,10 +73,38 @@ const NotificationDetails _rejectNotificationDetails = NotificationDetails(
     importance: Importance.max,
     priority: Priority.high,
   ),
+  iOS: DarwinNotificationDetails(
+    presentAlert: true,
+    presentBadge: true,
+    presentSound: true,
+  ),
 );
 
+Future<void> _safeInitializeNotifications() async {
+  const iconsToTry = [
+    '@drawable/ic_notification',
+    '@mipmap/launcher_icon',
+    '@mipmap/ic_launcher',
+  ];
+  const darwinSettings = DarwinInitializationSettings();
+
+  for (final iconName in iconsToTry) {
+    try {
+      await flutterLocalNotificationsPlugin.initialize(
+        settings: InitializationSettings(
+          android: AndroidInitializationSettings(iconName),
+          iOS: darwinSettings,
+        ),
+      );
+      return;
+    } catch (_) {
+      // Try next fallback icon if resource is missing
+    }
+  }
+}
+
 // ==========================================
-// IOS-STYLE HARDWARE LRA HAPTICS ENGINE
+// CROSS-PLATFORM HARDWARE LRA HAPTICS ENGINE
 // ==========================================
 class _LanternHaptics {
   static const MethodChannel _channel = MethodChannel('lantern.audio/mute');
@@ -73,50 +112,64 @@ class _LanternHaptics {
   static DateTime _lastVoicePulse = DateTime.fromMillisecondsSinceEpoch(0);
 
   static Future<void> _send(String type, {int amp = 130}) async {
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      try {
+        switch (type) {
+          case 'tick':
+          case 'lowTick':
+            await HapticFeedback.selectionClick();
+            break;
+          case 'click':
+          case 'pulse':
+            await HapticFeedback.lightImpact();
+            break;
+          case 'heavy':
+            await HapticFeedback.heavyImpact();
+            break;
+          default:
+            await HapticFeedback.mediumImpact();
+        }
+      } catch (_) {}
+      return;
+    }
+
     try {
       await _channel.invokeMethod('haptic', {'type': type, 'amp': amp});
     } catch (_) {
-      // Fallback if MainActivity.kt hasn't been rebuilt yet
       try {
-        await HapticFeedback.vibrate();
+        await HapticFeedback.selectionClick();
       } catch (_) {}
     }
   }
 
-  // Crisp micro-tick (karaoke words, subtle UI taps)
   static void tap() {
     unawaited(_send('tick', amp: 120));
   }
 
-  // Soft detent click (switches, duration pills, menu items)
   static void toggle() {
     unawaited(_send('click', amp: 160));
   }
 
-  // Medium confirmation thud (lantern selection, page actions)
   static void medium() {
     unawaited(_send('click', amp: 200));
   }
 
-  // Deep heavy thud (warnings, rejection, major actions)
   static void heavy() {
     unawaited(_send('heavy', amp: 255));
   }
 
-  // iOS Digital Crown / Scroll-Wheel detent feel when spinning the 3D lantern
   static void spinDetent({double velocity = 1.0}) {
     final now = DateTime.now();
-    // Cap tick rate to ~45 Hz so fast spins feel like a smooth mechanical wheel
-    if (now.difference(_lastSpinTick).inMilliseconds < 22) return;
+    // Throttled to ~28 Hz max to keep platform channel completely lag-free on low-end CPUs
+    if (now.difference(_lastSpinTick).inMilliseconds < 35) return;
     _lastSpinTick = now;
     final int dynamicAmp = (75 + (velocity * 25).clamp(0.0, 110.0)).toInt();
     unawaited(_send('lowTick', amp: dynamicAmp));
   }
 
-  // Real-time voice-reactive vibration while reciting the oath
   static void voiceResonance(double soundLevel) {
     final now = DateTime.now();
-    if (now.difference(_lastVoicePulse).inMilliseconds < 95) return;
+    if (now.difference(_lastVoicePulse).inMilliseconds < 110) return;
     _lastVoicePulse = now;
     final double norm = ((soundLevel - 1.5) / 12.0).clamp(0.0, 1.0);
     if (norm <= 0.05) return;
@@ -124,14 +177,12 @@ class _LanternHaptics {
     unawaited(_send('pulse', amp: amp));
   }
 
-  // Two-stage magnetic lock-on when holding the screen
   static Future<void> holdLockOn() async {
     await _send('click', amp: 170);
     await Future.delayed(const Duration(milliseconds: 55));
     await _send('heavy', amp: 230);
   }
 
-  // Smooth decelerating ratchet when the lantern unwinds back to front
   static Future<void> unwindToFront() async {
     const delays = [45, 55, 70, 90, 120];
     const amps = [110, 95, 80, 65, 50];
@@ -141,7 +192,6 @@ class _LanternHaptics {
     }
   }
 
-  // Three-stage ascending surge when the full oath is recognized
   static Future<void> oathCompletedSurge() async {
     await _send('tick', amp: 130);
     await Future.delayed(const Duration(milliseconds: 50));
@@ -150,7 +200,6 @@ class _LanternHaptics {
     await _send('heavy', amp: 255);
   }
 
-  // Powerful energy wave blast when releasing to 100% charge
   static Future<void> fullChargeBlast() async {
     await _send('heavy', amp: 255);
     await Future.delayed(const Duration(milliseconds: 70));
@@ -159,7 +208,6 @@ class _LanternHaptics {
     await _send('heavy', amp: 255);
   }
 
-  // Crisp double-pulse for the 5% Knock Charge
   static Future<void> quickChargePulse() async {
     await _send('click', amp: 190);
     await Future.delayed(const Duration(milliseconds: 65));
@@ -171,8 +219,10 @@ Future<void> _requestStartupPermissions() async {
   try {
     await Permission.notification.request();
     await Permission.microphone.request();
-    final exact = await Permission.scheduleExactAlarm.status;
-    if (!exact.isGranted) await Permission.scheduleExactAlarm.request();
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      final exact = await Permission.scheduleExactAlarm.status;
+      if (!exact.isGranted) await Permission.scheduleExactAlarm.request();
+    }
   } catch (e) {
     debugPrint("Startup permission error: $e");
   }
@@ -180,11 +230,7 @@ Future<void> _requestStartupPermissions() async {
 
 Future<void> _prepareNotificationsForExit() async {
   try {
-    await flutterLocalNotificationsPlugin.initialize(
-      settings: const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-      ),
-    );
+    await _safeInitializeNotifications();
     final android = flutterLocalNotificationsPlugin
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
     await android?.requestNotificationsPermission();
@@ -215,6 +261,7 @@ const String _modelControlJs = r'''
   var FRONT = FRONT_DEG * Math.PI / 180;
   var HOME_ORBIT = "0deg 90deg 105%";
   var ALT_ORBIT = "0.001deg 90deg 105%";
+  var QUALITY_TIER = "Best";
   var raf = 0;
   var spinDir = 1;
   var lastYaw = null;
@@ -224,24 +271,55 @@ const String _modelControlJs = r'''
   function stopAnim() { if (raf) { cancelAnimationFrame(raf); raf = 0; } }
   function ease(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
 
+  function optimizeGpuForTier(el, tier) {
+    if (!el) return;
+    var scale = 1.0;
+    var shadow = 1.0;
+    if (tier === "Low") { scale = 0.5; shadow = 0.0; }
+    else if (tier === "Medium") { scale = 0.72; shadow = 0.0; }
+    else if (tier === "High") { scale = 0.88; shadow = 0.4; }
+    else { scale = 1.0; shadow = 1.0; }
+
+    try {
+      el.style.willChange = "transform";
+      el.style.transform = "translateZ(0)";
+      el.style.touchAction = "none";
+      var ctor = el.constructor;
+      if (ctor) ctor.minimumRenderScale = scale;
+      el.minimumRenderScale = scale;
+      el.maximumRenderScale = scale;
+      el.shadowIntensity = shadow;
+      el.shadowSoftness = shadow > 0 ? 0.5 : 0.0;
+    } catch (e) {}
+  }
+
   function faceFront() {
     var el = viewer();
-    if (el && typeof el.resetTurntableRotation === "function" && !raf) el.resetTurntableRotation(FRONT);
+    if (!el) return;
+    optimizeGpuForTier(el, QUALITY_TIER);
+    if (typeof el.resetTurntableRotation === "function" && !raf) {
+      el.resetTurntableRotation(FRONT);
+    }
+    if (typeof window._desiredSpin === "boolean") {
+      window.lanternSetSpin(window._desiredSpin);
+    }
   }
+
   (function hookLoad() {
     var el = viewer();
     if (!el) { setTimeout(hookLoad, 50); return; }
+    optimizeGpuForTier(el, QUALITY_TIER);
     if (el.addEventListener) el.addEventListener("load", faceFront);
     if (el.loaded) faceFront();
   })();
 
   setInterval(function () {
     var el = viewer();
-    if (!el || raf) return;
+    if (!el || raf || !el.autoRotate) return;
     var y = yawOf(el);
     if (lastYaw !== null && Math.abs(y - lastYaw) > 1e-4) spinDir = y > lastYaw ? 1 : -1;
     lastYaw = y;
-  }, 150);
+  }, 250);
 
   function resetCamera(el) {
     try { el.cameraOrbit = el.cameraOrbit === HOME_ORBIT ? ALT_ORBIT : HOME_ORBIT; } catch (e) {}
@@ -260,7 +338,7 @@ const String _modelControlJs = r'''
 
     if (Math.abs(dist) < 0.005) { el.resetTurntableRotation(FRONT); return; }
 
-    var duration = 700 + 900 * Math.min(Math.abs(dist) / TWO_PI, 1);
+    var duration = 500 + 600 * Math.min(Math.abs(dist) / TWO_PI, 1);
     var t0 = null;
     function step(ts) {
       if (t0 === null) t0 = ts;
@@ -278,11 +356,13 @@ const String _modelControlJs = r'''
   }
 
   window.lanternSetSpin = function (spin) {
+    window._desiredSpin = spin;
     var el = viewer();
     if (!el) return "no";
     stopAnim();
     lastYaw = null;
     if (spin) {
+      el.autoRotateDelay = 0;
       el.setAttribute("auto-rotate", "");
       el.autoRotate = true;
     } else {
@@ -308,7 +388,10 @@ String _cleanSpoken(String raw) => raw
 class _LanternProfile {
   final String id;
   final String name;
-  final String modelAsset;
+  final String modelBest;
+  final String modelHigh;
+  final String modelMedium;
+  final String modelLow;
   final String menuIcon;
   final double frontDeg;
   final String cameraOrbit;
@@ -326,7 +409,10 @@ class _LanternProfile {
   _LanternProfile({
     required this.id,
     required this.name,
-    required this.modelAsset,
+    required this.modelBest,
+    required this.modelHigh,
+    required this.modelMedium,
+    required this.modelLow,
     required this.menuIcon,
     required this.frontDeg,
     required this.cameraOrbit,
@@ -340,6 +426,20 @@ class _LanternProfile {
     required this.finishCheck,
   })  : segments = _oathSplit(oathText),
         segmentIsWord = _oathSplit(oathText).map((seg) => RegExp(r"^[A-Za-z']+$").hasMatch(seg)).toList();
+
+  String modelForQuality(String quality) {
+    switch (quality) {
+      case 'Low':
+        return modelLow;
+      case 'Medium':
+        return modelMedium;
+      case 'High':
+        return modelHigh;
+      case 'Best':
+      default:
+        return modelBest;
+    }
+  }
 }
 
 bool _halFinish(String raw) {
@@ -388,37 +488,40 @@ final List<_LanternProfile> _lanternProfiles = [
   _LanternProfile(
     id: 'hal',
     name: 'Hal Jordan',
-    modelAsset: 'assets/green_lanterns_power_battery_from_lanterns.glb',
+    modelBest: 'assets/green_lanterns_power_battery_from_lanterns.glb',
+    modelHigh: 'assets/green_lanterns_power_battery_from_lanterns_high.glb',
+    modelMedium: 'assets/green_lanterns_power_battery_from_lanterns_medium.glb',
+    modelLow: 'assets/green_lanterns_power_battery_from_lanterns_low.glb',
     menuIcon: 'assets/image_aeb898.png',
     frontDeg: 180,
     cameraOrbit: '0deg 90deg 105%',
     oathText: "\"In brightest day, in blackest night,\nNo evil shall escape my sight,\nLet those who worship evil's might,\nBeware my power... Green Lantern's light!\"",
     oathPreview: '"In brightest day, in blackest night..."',
     aliases: [
-      ['in', 'and', 'an', 'on'],                                     
+      ['in', 'and', 'an', 'on'],
       ['brightest', 'bright', 'right', 'write', 'bride', 'lightest'],
-      ['day', 'they', 'the', 'de', 'stay'],                          
-      ['in', 'and', 'an', 'on'],                                     
-      ['blackest', 'black', 'blanket', 'block', 'darkest', 'back'],  
-      ['night', 'knight', 'nite', 'nine', 'light', 'right'],         
-      ['no', 'know', 'now', 'not'],                                  
-      ['evil', 'even', 'able', 'eva', 'devil'],                      
-      ['shall', 'shell', 'should', 'will', 'show', 'sha'],           
-      ['escape', 'scrape', 'skip', 'skate', 'state', 'escaped'],     
-      ['my', 'by', 'me', 'might'],                                   
-      ['sight', 'site', 'side', 'sign', 'fight', 'light', 'right'],  
-      ['let', 'left', 'like', 'that', 'get', 'late'],                
-      ['those', 'these', 'dose', 'goes', 'toast', 'though'],         
-      ['who', 'how', 'to', 'do', 'you'],                             
-      ['worship', 'warship', 'washing', 'watch', 'worth', 'ship'],   
-      ['evils', 'evil', 'even', 'devil', 'devils', 'his'],           
-      ['might', 'mite', 'night', 'light', 'right', 'fight', 'mind'], 
+      ['day', 'they', 'the', 'de', 'stay'],
+      ['in', 'and', 'an', 'on'],
+      ['blackest', 'black', 'blanket', 'block', 'darkest', 'back'],
+      ['night', 'knight', 'nite', 'nine', 'light', 'right'],
+      ['no', 'know', 'now', 'not'],
+      ['evil', 'even', 'able', 'eva', 'devil'],
+      ['shall', 'shell', 'should', 'will', 'show', 'sha'],
+      ['escape', 'scrape', 'skip', 'skate', 'state', 'escaped'],
+      ['my', 'by', 'me', 'might'],
+      ['sight', 'site', 'side', 'sign', 'fight', 'light', 'right'],
+      ['let', 'left', 'like', 'that', 'get', 'late'],
+      ['those', 'these', 'dose', 'goes', 'toast', 'though'],
+      ['who', 'how', 'to', 'do', 'you'],
+      ['worship', 'warship', 'washing', 'watch', 'worth', 'ship'],
+      ['evils', 'evil', 'even', 'devil', 'devils', 'his'],
+      ['might', 'mite', 'night', 'light', 'right', 'fight', 'mind'],
       ['beware', 'where', 'aware', 'before'],
-      ['my', 'by', 'me'],                                            
-      ['power', 'our', 'hour', 'tower', 'flower', 'powers'],         
-      ['green', 'clean', 'queen', 'bean', 'dream', 'free'],          
-      ['lanterns', 'lantern', 'london', 'landing', 'phantom', 'lamp', 'latin'],       
-      ['light', 'night', 'right', 'like', 'life', 'white', 'might', 'lights', 'lite'], 
+      ['my', 'by', 'me'],
+      ['power', 'our', 'hour', 'tower', 'flower', 'powers'],
+      ['green', 'clean', 'queen', 'bean', 'dream', 'free'],
+      ['lanterns', 'lantern', 'london', 'landing', 'phantom', 'lamp', 'latin'],
+      ['light', 'night', 'right', 'like', 'life', 'white', 'might', 'lights', 'lite'],
     ],
     words: [
       'in', 'brightest', 'day', 'in', 'blackest', 'night',
@@ -432,7 +535,10 @@ final List<_LanternProfile> _lanternProfiles = [
   _LanternProfile(
     id: 'john',
     name: 'John Stewart',
-    modelAsset: 'assets/john_stewart_lantern.glb',
+    modelBest: 'assets/john_stewart_lantern.glb',
+    modelHigh: 'assets/john_stewart_lantern_high.glb',
+    modelMedium: 'assets/john_stewart_lantern_medium.glb',
+    modelLow: 'assets/john_stewart_lantern_low.glb',
     menuIcon: 'assets/image_aeb85d.png',
     frontDeg: 0,
     cameraOrbit: '0deg 90deg 105%',
@@ -495,8 +601,9 @@ final List<_LanternProfile> _lanternProfiles = [
 _LanternProfile _lanternById(String? id) =>
     _lanternProfiles.firstWhere((p) => p.id == id, orElse: () => _lanternProfiles.first);
 
-String _modelControlJsFor(double frontDeg) =>
-    _modelControlJs.replaceFirst('var FRONT_DEG = 180;', 'var FRONT_DEG = $frontDeg;');
+String _modelControlJsFor(double frontDeg, String quality) => _modelControlJs
+    .replaceFirst('var FRONT_DEG = 180;', 'var FRONT_DEG = $frontDeg;')
+    .replaceFirst('var QUALITY_TIER = "Best";', 'var QUALITY_TIER = "$quality";');
 
 // ==========================================
 // FIRST-LAUNCH TUTORIAL STEPS
@@ -576,7 +683,7 @@ class LanternApp extends StatelessWidget {
 }
 
 // ==========================================
-// COMIC BOOK INTRO SCREEN
+// COMIC BOOK INTRO SCREEN (FULL SAFE-AREA EXPANDED)
 // ==========================================
 class IntroScreen extends StatefulWidget {
   const IntroScreen({super.key});
@@ -589,6 +696,7 @@ class _IntroScreenState extends State<IntroScreen> {
   final PageController _pageController = PageController();
   final TextEditingController _nameController = TextEditingController();
   String _userName = "";
+  bool _imagesPrecached = false;
 
   final AudioPlayer _introAudioPlayer = AudioPlayer();
 
@@ -604,11 +712,34 @@ class _IntroScreenState extends State<IntroScreen> {
     'scene9.mp3',
   ];
 
+  static const List<String> _introImageAssets = [
+    'assets/94777.png',
+    'assets/94807.png',
+    'assets/94779.png',
+    'assets/94780.png',
+    'assets/94781.png',
+    'assets/94782.png',
+    'assets/94783.png',
+    'assets/94785.png',
+    'assets/94786.png',
+  ];
+
   @override
   void initState() {
     super.initState();
     _playAudioForPage(0);
     WidgetsBinding.instance.addPostFrameCallback((_) => _requestStartupPermissions());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_imagesPrecached) {
+      _imagesPrecached = true;
+      for (final asset in _introImageAssets) {
+        precacheImage(AssetImage(asset), context);
+      }
+    }
   }
 
   void _playAudioForPage(int pageIndex) async {
@@ -626,8 +757,8 @@ class _IntroScreenState extends State<IntroScreen> {
     _LanternHaptics.tap();
     FocusScope.of(context).unfocus();
     _pageController.nextPage(
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeInOut,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOutCubic,
     );
   }
 
@@ -644,17 +775,22 @@ class _IntroScreenState extends State<IntroScreen> {
 
   @override
   void dispose() {
+    _pageController.dispose();
+    _nameController.dispose();
     _introAudioPlayer.dispose();
     super.dispose();
   }
 
   Widget _buildComicPage(Widget child) {
     return Container(
-      color: Colors.black, 
-      child: Center(
-        child: AspectRatio(
-          aspectRatio: 9 / 16,
-          child: child,
+      color: Colors.black,
+      child: SafeArea(
+        top: true,
+        bottom: false,
+        child: SizedBox.expand(
+          child: RepaintBoundary(
+            child: child,
+          ),
         ),
       ),
     );
@@ -668,9 +804,7 @@ class _IntroScreenState extends State<IntroScreen> {
       body: PageView(
         controller: _pageController,
         physics: const NeverScrollableScrollPhysics(),
-        onPageChanged: (index) {
-          _playAudioForPage(index);
-        },
+        onPageChanged: _playAudioForPage,
         children: [
           _buildTapScreen('assets/94777.png'),
           _buildTapScreen('assets/94807.png'),
@@ -688,13 +822,14 @@ class _IntroScreenState extends State<IntroScreen> {
 
   Widget _buildTapScreen(String assetPath) {
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: _nextPage,
       child: _buildComicPage(
         Image.asset(
           assetPath,
           fit: BoxFit.fill,
-          filterQuality: FilterQuality.high,
-          isAntiAlias: true,
+          filterQuality: FilterQuality.medium,
+          gaplessPlayback: true,
         ),
       ),
     );
@@ -706,16 +841,17 @@ class _IntroScreenState extends State<IntroScreen> {
         builder: (context, constraints) {
           final height = constraints.maxHeight;
           final width = constraints.maxWidth;
-          
+
           return Stack(
             children: [
               SizedBox(
-                width: width, 
+                width: width,
                 height: height,
                 child: Image.asset(
-                  'assets/94780.png', 
+                  'assets/94780.png',
                   fit: BoxFit.fill,
-                  filterQuality: FilterQuality.high,
+                  filterQuality: FilterQuality.medium,
+                  gaplessPlayback: true,
                 ),
               ),
               Positioned(
@@ -757,7 +893,7 @@ class _IntroScreenState extends State<IntroScreen> {
                 ),
               ),
               Positioned(
-                top: height * 0.855, 
+                top: height * 0.855,
                 left: width * 0.12,
                 right: width * 0.12,
                 child: GestureDetector(
@@ -801,24 +937,26 @@ class _IntroScreenState extends State<IntroScreen> {
               ),
             ],
           );
-        }
+        },
       ),
     );
   }
 
   Widget _buildShowNameScreen() {
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: _nextPage,
       child: _buildComicPage(
         Stack(
           children: [
             SizedBox(
-              width: double.infinity, 
+              width: double.infinity,
               height: double.infinity,
               child: Image.asset(
-                'assets/94781.png', 
+                'assets/94781.png',
                 fit: BoxFit.fill,
-                filterQuality: FilterQuality.high,
+                filterQuality: FilterQuality.medium,
+                gaplessPlayback: true,
               ),
             ),
             Align(
@@ -874,20 +1012,23 @@ class _IntroScreenState extends State<IntroScreen> {
       Stack(
         children: [
           SizedBox(
-            width: double.infinity, 
+            width: double.infinity,
             height: double.infinity,
             child: Image.asset(
-              'assets/94782.png', 
+              'assets/94782.png',
               fit: BoxFit.fill,
-              filterQuality: FilterQuality.high,
+              filterQuality: FilterQuality.medium,
+              gaplessPlayback: true,
             ),
           ),
           Align(
             alignment: const Alignment(-0.6, 0.77),
             child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
               onTap: _onRejectTap,
               child: Container(
-                width: 140, height: 70,
+                width: 150,
+                height: 80,
                 color: Colors.transparent,
               ),
             ),
@@ -895,12 +1036,14 @@ class _IntroScreenState extends State<IntroScreen> {
           Align(
             alignment: const Alignment(0.6, 0.77),
             child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
               onTap: () {
                 _LanternHaptics.medium();
                 _nextPage();
               },
               child: Container(
-                width: 140, height: 70,
+                width: 150,
+                height: 80,
                 color: Colors.transparent,
               ),
             ),
@@ -915,20 +1058,23 @@ class _IntroScreenState extends State<IntroScreen> {
       Stack(
         children: [
           SizedBox(
-            width: double.infinity, 
+            width: double.infinity,
             height: double.infinity,
             child: Image.asset(
-              'assets/94786.png', 
+              'assets/94786.png',
               fit: BoxFit.fill,
-              filterQuality: FilterQuality.high,
+              filterQuality: FilterQuality.medium,
+              gaplessPlayback: true,
             ),
           ),
           Align(
             alignment: const Alignment(0, 0.85),
             child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
               onTap: _finishIntro,
               child: Container(
-                width: 250, height: 70,
+                width: 260,
+                height: 80,
                 color: Colors.transparent,
               ),
             ),
@@ -954,6 +1100,8 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   static const MethodChannel _muteChannel = MethodChannel('lantern.audio/mute');
 
   double chargeLevel = 0.0;
+  final ValueNotifier<double> _chargeNotifier = ValueNotifier<double>(0.0);
+
   Timer? _drainTimer;
   Timer? _handoffTimer;
   Timer? _micDelayTimer;
@@ -969,11 +1117,10 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   bool isListeningForOath = false;
   bool _oathTriggered = false;
   bool _spinMode = false;
-  bool _autoRotateModel = true; 
+  bool _autoRotateModel = true;
   bool _audioKnockMode = false;
   bool _countdownPlayed = false;
 
-  // Tracks manual 3D spin drag distance for iOS Digital Crown detent ticks
   double _spinDragAccumulator = 0.0;
 
   final SpeechToText _speechToText = SpeechToText();
@@ -1004,10 +1151,13 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   bool _preferOnDevice = false;
   Ticker? _oathTicker;
   Duration _oathLastTick = Duration.zero;
-  
+
   final ValueNotifier<double> _voiceNotifier = ValueNotifier<double>(0.0);
+  DateTime _lastVoiceUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
 
   late AnimationController _blinkController;
+  late Listenable _headerListenable;
+  late Listenable _bgListenable;
 
   WebViewController? _modelController;
   bool _prefsReady = false;
@@ -1023,13 +1173,23 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   bool _showTutorial = false;
   int _tutorialStep = 0;
 
+  String _currentQuality = 'Best';
+
+  String get _currentModelPath => _lantern.modelForQuality(_currentQuality);
+
   bool get _shouldSpin => _autoRotateModel && !_isPressing && !_spinMode;
+
+  void _setChargeLevel(double val) {
+    chargeLevel = val.clamp(0.0, 100.0);
+    _chargeNotifier.value = chargeLevel;
+  }
 
   Future<void> _loadModelPrefs() async {
     final p = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
       _autoRotateModel = p.getBool('autoRotateModel') ?? true;
+      _currentQuality = p.getString('graphicsQuality') ?? 'Best';
       _lantern = _lanternById(p.getString('selectedLantern'));
       _initialSpin = _shouldSpin;
       _appliedSpin = _initialSpin;
@@ -1129,9 +1289,11 @@ class _RingChargerScreenState extends State<RingChargerScreen>
                             child: Container(
                               height: 55,
                               width: 40,
-                              decoration: p.id == _lantern.id ? BoxDecoration(
-                                boxShadow: [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.4), blurRadius: 12)]
-                              ) : null,
+                              decoration: p.id == _lantern.id
+                                  ? BoxDecoration(
+                                      boxShadow: [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.4), blurRadius: 12)],
+                                    )
+                                  : null,
                               child: Image.asset(p.menuIcon, fit: BoxFit.contain),
                             ),
                           ),
@@ -1149,7 +1311,13 @@ class _RingChargerScreenState extends State<RingChargerScreen>
 
   Future<void> _syncModelSpin() async {
     final controller = _modelController;
-    if (controller == null || !_prefsReady || _spinSyncBusy) return;
+    if (controller == null || !_prefsReady) return;
+
+    if (_spinSyncBusy) {
+      _spinSyncRetry?.cancel();
+      _spinSyncRetry = Timer(const Duration(milliseconds: 80), _syncModelSpin);
+      return;
+    }
 
     final want = _shouldSpin;
     if (_appliedSpin == want) {
@@ -1169,7 +1337,6 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       );
       if (res.toString().contains('ok')) {
         if (_appliedSpin == true && !want) {
-          // Subtle decelerating ratchet ticks as the lantern unwinds to face front
           unawaited(_LanternHaptics.unwindToFront());
         }
         _appliedSpin = want;
@@ -1183,7 +1350,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     if (!mounted) return;
     if (_appliedSpin != _shouldSpin) {
       _spinSyncRetry?.cancel();
-      _spinSyncRetry = Timer(const Duration(milliseconds: 200), _syncModelSpin);
+      _spinSyncRetry = Timer(const Duration(milliseconds: 120), _syncModelSpin);
     }
   }
 
@@ -1194,6 +1361,8 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       vsync: this,
       duration: const Duration(milliseconds: 700),
     );
+    _headerListenable = Listenable.merge([_blinkController, _chargeNotifier]);
+    _bgListenable = Listenable.merge([_voiceNotifier, _chargeNotifier]);
     WidgetsBinding.instance.addObserver(this);
     _loadModelPrefs();
     _initSystem();
@@ -1213,52 +1382,22 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   }
 
   Future<void> _setBeepMute(bool mute) async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
     try {
       await _muteChannel.invokeMethod(mute ? 'muteMedia' : 'unmuteMedia');
     } catch (_) {}
   }
 
   void _initSystem() async {
-    try {
-      await _muteChannel.invokeMethod('unmuteMedia');
-    } catch (_) {}
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        await _muteChannel.invokeMethod('unmuteMedia');
+      } catch (_) {}
+    }
 
     await _initAudio();
     await _initNotifications();
-
-    try {
-      _speechEnabled = await _speechToText.initialize(
-        onError: (e) {
-          debugPrint("Speech error: ${e.errorMsg}");
-          final msg = e.errorMsg.toLowerCase();
-          if (_preferOnDevice && (msg.contains('language') || msg.contains('not_supported') || msg.contains('unavailable'))) {
-            _preferOnDevice = false;
-            debugPrint("[oath] on-device speech unavailable, using the default recogniser");
-          }
-        },
-        onStatus: (status) {
-          if ((status == 'notListening' || status == 'done') &&
-              _isPressing &&
-              !_oathTriggered) {
-            final id = _pressId;
-            Future.delayed(const Duration(milliseconds: 150), () {
-              if (_isPressing && id == _pressId && !_speechToText.isListening) {
-                _listenForOath(id);
-              }
-            });
-          }
-          if (status == 'notListening' && _audioKnockMode && !isListeningForOath) {
-            Future.delayed(const Duration(milliseconds: 100), () {
-              if (_audioKnockMode && !isListeningForOath && chargeLevel == 0.0) {
-                _startContinuousListening();
-              }
-            });
-          }
-        },
-      );
-    } catch (e) {
-      debugPrint("Speech init error: $e");
-    }
+    await _ensureSpeechReady();
 
     prefs = await SharedPreferences.getInstance();
     _loadSavedData();
@@ -1267,18 +1406,25 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   Future<void> _initAudio() async {
     try {
       final audioContext = AudioContext(
-        android: AudioContextAndroid(
+        android: const AudioContextAndroid(
           isSpeakerphoneOn: false,
           stayAwake: false,
           contentType: AndroidContentType.music,
           usageType: AndroidUsageType.media,
           audioFocus: AndroidAudioFocus.none,
         ),
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playAndRecord,
+          options: const {
+            AVAudioSessionOptions.defaultToSpeaker,
+            AVAudioSessionOptions.mixWithOthers,
+          },
+        ),
       );
       await AudioPlayer.global.setAudioContext(audioContext);
 
       final allPlayers = [
-        _holdPlayer, _oathPlayer, _releasePlayer, 
+        _holdPlayer, _oathPlayer, _releasePlayer,
         _quickChargePlayer, _depletionPlayer, _countdownPlayer
       ];
 
@@ -1289,10 +1435,10 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       }
 
       final files = [
-        _holdFile, _oathFile, _releaseFile, 
+        _holdFile, _oathFile, _releaseFile,
         _quickChargeFile, _depletionFile, _countdownFile
       ];
-      
+
       for (final f in files) {
         final uri = await AudioCache.instance.load(f);
         _cachedPaths[f] = uri.toFilePath();
@@ -1363,7 +1509,6 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     final double nextVal = (cur + speed * dt).clamp(0.0, target).toDouble();
     _oathProgress.value = nextVal;
 
-    // Crisp iOS Taptic tick as each word visually locks in
     final int litWordIdx = nextVal.floor();
     if (litWordIdx > _lastHapticWordIdx) {
       _lastHapticWordIdx = litWordIdx;
@@ -1462,6 +1607,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       _oathTriggered = true;
       _oathDetected = true;
       unawaited(_LanternHaptics.oathCompletedSurge());
+      if (mounted) setState(() {});
     }
   }
 
@@ -1479,9 +1625,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       final int activeId = _pressId;
       _tailWordTimer = Timer(const Duration(milliseconds: 350), () {
         if (mounted && _isPressing && _pressId == activeId && !_oathTriggered) {
-          setState(() {
-            _completeOathTrigger();
-          });
+          _completeOathTrigger();
         }
       });
     }
@@ -1502,22 +1646,32 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       tz.initializeTimeZones();
       tz.setLocalLocation(tz.getLocation('Asia/Kolkata'));
 
-      const AndroidInitializationSettings initializationSettingsAndroid = AndroidInitializationSettings('@mipmap/ic_launcher');
-      const InitializationSettings initializationSettings = InitializationSettings(android: initializationSettingsAndroid);
-      await flutterLocalNotificationsPlugin.initialize(settings: initializationSettings);
+      await _safeInitializeNotifications();
 
-      final androidPlugin = flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+      final androidPlugin = flutterLocalNotificationsPlugin
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
       if (androidPlugin != null) {
         await androidPlugin.requestNotificationsPermission();
-        try { await androidPlugin.requestExactAlarmsPermission(); } catch (e) { debugPrint("Exact alarm permission request failed: $e"); }
+        try {
+          await androidPlugin.requestExactAlarmsPermission();
+        } catch (e) {
+          debugPrint("Exact alarm permission request failed: $e");
+        }
 
         const AndroidNotificationChannel channel = AndroidNotificationChannel(
-          _channelId, _channelName, description: 'Tracks the battery drain', importance: Importance.max,
+          _channelId,
+          _channelName,
+          description: 'Tracks the battery drain',
+          importance: Importance.max,
         );
         await androidPlugin.createNotificationChannel(channel);
 
         const AndroidNotificationChannel depletionChannel = AndroidNotificationChannel(
-          'ring_depletion_channel_v1', 'Ring Depletion Alerts', description: 'Plays the warning sound at 20, 15, and 10 percent', importance: Importance.max, sound: RawResourceAndroidNotificationSound('ring_depletion'),
+          'ring_depletion_channel_v1',
+          'Ring Depletion Alerts',
+          description: 'Plays the warning sound at 20, 15, and 10 percent',
+          importance: Importance.max,
+          sound: RawResourceAndroidNotificationSound('ring_depletion'),
         );
         await androidPlugin.createNotificationChannel(depletionChannel);
       }
@@ -1533,15 +1687,16 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     int lastTimeMs = prefs?.getInt('lastUpdateTime') ?? 0;
     _totalDrainSeconds = prefs?.getInt('totalDrainSeconds') ?? 2880;
     _autoRotateModel = prefs?.getBool('autoRotateModel') ?? true;
+    _currentQuality = prefs?.getString('graphicsQuality') ?? 'Best';
 
     if (savedCharge > 0) {
       DateTime lastTime = DateTime.fromMillisecondsSinceEpoch(lastTimeMs);
       int elapsedSeconds = DateTime.now().difference(lastTime).inSeconds;
       double drain = elapsedSeconds * (100.0 / _totalDrainSeconds);
-      chargeLevel = savedCharge - drain;
+      _setChargeLevel(savedCharge - drain);
 
       if (chargeLevel <= 0) {
-        chargeLevel = 0.0;
+        _setChargeLevel(0.0);
         _countdownPlayed = true;
       } else {
         int rem = (chargeLevel / 100.0 * _totalDrainSeconds).ceil();
@@ -1549,11 +1704,13 @@ class _RingChargerScreenState extends State<RingChargerScreen>
         _startDrain();
       }
     } else {
-      chargeLevel = 0.0;
+      _setChargeLevel(0.0);
     }
-    setState(() {
-      _updateBlinkState();
-    });
+    if (mounted) {
+      setState(() {
+        _updateBlinkState();
+      });
+    }
   }
 
   void _saveData() {
@@ -1561,6 +1718,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     prefs?.setInt('lastUpdateTime', DateTime.now().millisecondsSinceEpoch);
     prefs?.setInt('totalDrainSeconds', _totalDrainSeconds);
     prefs?.setBool('autoRotateModel', _autoRotateModel);
+    prefs?.setString('graphicsQuality', _currentQuality);
   }
 
   void _checkInAppThresholds(double oldCharge, double newCharge) {
@@ -1580,42 +1738,48 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   }
 
   void _drainTick() {
-    if (!mounted) return;
+    if (!mounted || chargeLevel <= 0) return;
     final now = DateTime.now();
     final elapsedMs = now.difference(_lastDrainTick).inMilliseconds;
     _lastDrainTick = now;
     if (elapsedMs <= 0) return;
 
-    setState(() {
-      if (chargeLevel > 0) {
-        final double prevCharge = chargeLevel;
-        chargeLevel -= (elapsedMs / 1000.0) * (100.0 / _totalDrainSeconds);
+    final double prevCharge = chargeLevel;
+    final double nextCharge = (chargeLevel - (elapsedMs / 1000.0) * (100.0 / _totalDrainSeconds)).clamp(0.0, 100.0);
+    _setChargeLevel(nextCharge);
 
-        if (chargeLevel <= 0) {
-          chargeLevel = 0;
-          _drainTimer?.cancel();
-        }
+    final bool caughtUp = elapsedMs > 3000;
+    if (!caughtUp) _checkInAppThresholds(prevCharge, chargeLevel);
+    _updateBlinkState();
 
-        final bool caughtUp = elapsedMs > 3000;
-        if (!caughtUp) _checkInAppThresholds(prevCharge, chargeLevel);
-        _updateBlinkState();
+    final int prevRemaining = (prevCharge / 100.0 * _totalDrainSeconds).ceil();
+    final int remainingSeconds = (chargeLevel / 100.0 * _totalDrainSeconds).ceil();
+    if (remainingSeconds <= 6 && caughtUp) {
+      _countdownPlayed = true;
+    } else if (prevRemaining > 6 && remainingSeconds <= 6 && !_countdownPlayed) {
+      _countdownPlayed = true;
+      unawaited(_playInstant(_countdownPlayer, _countdownFile));
+    }
+    _saveData();
 
-        final int prevRemaining = (prevCharge / 100.0 * _totalDrainSeconds).ceil();
-        final int remainingSeconds = (chargeLevel / 100.0 * _totalDrainSeconds).ceil();
-        if (remainingSeconds <= 6 && caughtUp) {
-          _countdownPlayed = true;
-        } else if (prevRemaining > 6 && remainingSeconds <= 6 && !_countdownPlayed) {
-          _countdownPlayed = true;
-          unawaited(_playInstant(_countdownPlayer, _countdownFile));
-        }
-        _saveData();
-      }
-    });
+    // Only rebuild the main widget tree when battery reaches 0% to show the bottom duration card
+    if (chargeLevel <= 0) {
+      _drainTimer?.cancel();
+      setState(() {});
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && chargeLevel > 0) _drainTick();
+    if (state == AppLifecycleState.resumed) {
+      if (chargeLevel > 0) _drainTick();
+      _syncModelSpin();
+    } else if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      if (_isPressing) {
+        _activePointer = null;
+        _stopListening();
+      }
+    }
   }
 
   AndroidFlutterLocalNotificationsPlugin? get _androidNotif =>
@@ -1713,20 +1877,16 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     await _scheduleAlert(3, "Ring Battery Low", "Battery at 10%. Charge immediately.", (_totalDrainSeconds * 0.90).toInt(), customSound: true);
     await _scheduleAlert(4, "Ring Battery Low", "Battery at 5%. Charge immediately.", (_totalDrainSeconds * 0.95).toInt(), customSound: false);
     await _scheduleAlert(5, "Ring Depleted", "Battery at 0%. Charge immediately.", _totalDrainSeconds, customSound: false);
-
-    try {
-      final pending = await flutterLocalNotificationsPlugin.pendingNotificationRequests();
-      debugPrint("Scheduled alerts pending: ${pending.length} (expected 5)");
-    } catch (e) {
-      debugPrint("Pending check failed: $e");
-    }
   }
 
   Future<void> _scheduleAlert(int id, String title, String body, int seconds, {required bool customSound}) async {
     final when = tz.TZDateTime.now(tz.local).add(Duration(seconds: seconds));
     Future<void> doSchedule(AndroidScheduleMode mode) {
       return flutterLocalNotificationsPlugin.zonedSchedule(
-        id: id, title: title, body: body, scheduledDate: when,
+        id: id,
+        title: title,
+        body: body,
+        scheduledDate: when,
         notificationDetails: customSound ? _depletionNotificationDetails : _notificationDetails,
         androidScheduleMode: mode,
       );
@@ -1739,13 +1899,11 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     for (final mode in modes) {
       try {
         await doSchedule(mode);
-        debugPrint("Alert $id scheduled in ${seconds}s using $mode");
         return;
       } catch (e) {
         debugPrint("Alert $id: $mode failed: $e");
       }
     }
-    debugPrint("Alert $id could not be scheduled at all");
   }
 
   void _restartRing() async {
@@ -1759,7 +1917,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     await flutterLocalNotificationsPlugin.cancelAll();
 
     setState(() {
-      chargeLevel = 0.0;
+      _setChargeLevel(0.0);
       _knockCount = 0;
       _audioKnockMode = false;
       _spinMode = false;
@@ -1770,6 +1928,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       _oathProgress.value = 0.0;
       _updateBlinkState();
     });
+    unawaited(_syncModelSpin());
 
     _saveData();
     await _speechToText.stop();
@@ -1780,7 +1939,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     unawaited(_LanternHaptics.quickChargePulse());
     setState(() {
       if (chargeLevel == 0.0) {
-        chargeLevel = 5.0;
+        _setChargeLevel(5.0);
         _countdownPlayed = false;
         _saveData();
         unawaited(_scheduleQuickChargeAlert());
@@ -1794,7 +1953,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
   void _triggerFullCharge() async {
     unawaited(_LanternHaptics.fullChargeBlast());
     setState(() {
-      chargeLevel = 100.0;
+      _setChargeLevel(100.0);
       _countdownPlayed = false;
       _updateBlinkState();
     });
@@ -1874,6 +2033,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     });
 
     setState(() => isListeningForOath = true);
+    unawaited(_syncModelSpin()); // Immediately unwinds lantern to front face
     unawaited(_setBeepMute(true));
 
     if (_audioReady) {
@@ -1913,20 +2073,20 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       await _speechToText.listen(
         onResult: (result) {
           if (id != _pressId) return;
-          
+
           if (mounted && isListeningForOath) {
-            setState(() {
-              _currentText = result.recognizedWords;
-              _updateKaraokeProgress('$_oathHistory $_currentText');
-            });
-            final int ms = DateTime.now().difference(_pressStartedAt).inMilliseconds;
-            debugPrint('[oath] +${ms}ms final=${result.finalResult} matched=$_matchedWordCount "${result.recognizedWords}"');
+            _currentText = result.recognizedWords;
+            _updateKaraokeProgress('$_oathHistory $_currentText');
           }
         },
         onSoundLevelChange: (level) {
           if (mounted && isListeningForOath) {
-            _voiceNotifier.value = level;
-            // Live voice-reactive vibration as you speak into the ring
+            final now = DateTime.now();
+            if (now.difference(_lastVoiceUiUpdate).inMilliseconds >= 60) {
+              _lastVoiceUiUpdate = now;
+              final double clamped = level.clamp(0.0, 15.0).toDouble();
+              _voiceNotifier.value = (_voiceNotifier.value * 0.55) + (clamped * 0.45);
+            }
             if (level > 2.0 && !_oathTriggered) {
               _LanternHaptics.voiceResonance(level);
             }
@@ -1954,11 +2114,12 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     _holdHapticTimer?.cancel();
     _tailWordTimer?.cancel();
     final id = _pressId;
-    
+
     setState(() {
       isListeningForOath = false;
       _voiceNotifier.value = 0.0;
     });
+    unawaited(_syncModelSpin()); // Immediately resumes spinning on release
 
     unawaited(_haltPlayer(_holdPlayer));
     unawaited(_haltPlayer(_oathPlayer));
@@ -2008,7 +2169,10 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       builder: (context) {
         return AlertDialog(
           backgroundColor: const Color(0xFF0F1A15),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.greenAccent.withValues(alpha: 0.3))),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: Colors.greenAccent.withValues(alpha: 0.3)),
+          ),
           title: const Text('Custom Drain Time', style: TextStyle(color: Colors.greenAccent)),
           content: TextField(
             controller: controller,
@@ -2059,6 +2223,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     _holdHapticTimer?.cancel();
     _tailWordTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
+    _chargeNotifier.dispose();
     _voiceNotifier.dispose();
     _oathTicker?.dispose();
     _oathProgress.dispose();
@@ -2179,13 +2344,13 @@ class _RingChargerScreenState extends State<RingChargerScreen>
     );
   }
 
-  String get _formattedTime {
-    if (chargeLevel <= 0) return "";
-    int totalSec = (chargeLevel / 100.0 * _totalDrainSeconds).ceil();
+  String _formatRemainingTime(double currentCharge) {
+    if (currentCharge <= 0) return "";
+    int totalSec = (currentCharge / 100.0 * _totalDrainSeconds).ceil();
     int hours = totalSec ~/ 3600;
     int minutes = (totalSec % 3600) ~/ 60;
     int seconds = totalSec % 60;
-    
+
     if (hours > 0) {
       return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
     }
@@ -2386,101 +2551,113 @@ class _RingChargerScreenState extends State<RingChargerScreen>
       backgroundColor: Colors.black,
       body: Stack(
         children: [
+          // 1. Isolated Background Gradient
           Positioned.fill(
-            child: ValueListenableBuilder<double>(
-              valueListenable: _voiceNotifier,
-              builder: (context, voiceLevel, _) {
-                final double normalizedVoice = voiceLevel.clamp(0.0, 15.0).toDouble() / 15.0;
-                final double bgRadius = isListeningForOath
-                    ? 0.75 + (normalizedVoice * 0.65)
-                    : 0.8 + (chargeLevel / 100) * 0.4;
-                final double bgOpacity = isListeningForOath
-                    ? 0.28 + (normalizedVoice * 0.55)
-                    : 0.15 + ((chargeLevel / 100) * 0.15);
-                return AnimatedContainer(
-                  duration: const Duration(milliseconds: 120),
-                  decoration: BoxDecoration(
-                    gradient: RadialGradient(
-                      center: const Alignment(0, 0.1),
-                      radius: bgRadius,
-                      colors: [
-                        Colors.greenAccent.withValues(alpha: bgOpacity.clamp(0.0, 1.0).toDouble()),
-                        Colors.black,
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          
-          Positioned.fill(
-            child: Center(
-              child: Icon(
-                Icons.adjust,
-                size: 350,
-                color: Colors.greenAccent.withValues(alpha: 0.03),
-              ),
-            ),
-          ),
-
-          // 3D Model Viewer wrapped in a translucent Listener so manual 3D spinning
-          // triggers smooth iOS Digital Crown / scroll-wheel detent haptics!
-          Positioned.fill(
-            child: Listener(
-              behavior: HitTestBehavior.translucent,
-              onPointerDown: (_) {
-                _spinDragAccumulator = 0.0;
-                if (_spinMode) {
-                  _LanternHaptics.spinDetent(velocity: 0.8);
-                }
-              },
-              onPointerMove: (e) {
-                if (!_spinMode) return;
-                final double delta = e.delta.distance;
-                _spinDragAccumulator += delta;
-                // Fire a crisp mechanical micro-tick every 11 logical pixels of rotation drag
-                if (_spinDragAccumulator >= 11.0) {
-                  _spinDragAccumulator %= 11.0;
-                  _LanternHaptics.spinDetent(velocity: (delta / 8.0).clamp(0.4, 3.0));
-                }
-              },
-              child: AnimatedScale(
-                scale: isListeningForOath ? 1.15 : 1.0,
-                duration: const Duration(milliseconds: 600),
-                curve: Curves.easeOutCubic,
-                child: !_prefsReady
-                    ? const SizedBox.shrink()
-                    : ModelViewer(
-                        key: ValueKey(_lantern.id),
-                        src: _lantern.modelAsset,
-                        alt: 'Power Battery',
-                        autoRotate: _initialSpin,
-                        autoRotateDelay: 0,
-                        rotationPerSecond: '20deg', 
-                        cameraOrbit: _lantern.cameraOrbit,
-                        fieldOfView: _lantern.fieldOfView,
-                        cameraControls: true,
-                        backgroundColor: Colors.transparent,
-                        interactionPrompt: InteractionPrompt.none,
-                        relatedJs: _modelControlJsFor(_lantern.frontDeg),
-                        onWebViewCreated: (controller) {
-                          _modelController = controller;
-                          _syncModelSpin();
-                        },
+            child: RepaintBoundary(
+              child: AnimatedBuilder(
+                animation: _bgListenable,
+                builder: (context, _) {
+                  final double currentCharge = _chargeNotifier.value;
+                  final double normalizedVoice = (_voiceNotifier.value / 15.0).clamp(0.0, 1.0);
+                  final double bgRadius = isListeningForOath
+                      ? 0.75 + (normalizedVoice * 0.65)
+                      : 0.8 + (currentCharge / 100) * 0.4;
+                  final double bgOpacity = isListeningForOath
+                      ? 0.28 + (normalizedVoice * 0.55)
+                      : 0.15 + ((currentCharge / 100) * 0.15);
+                  return Container(
+                    decoration: BoxDecoration(
+                      gradient: RadialGradient(
+                        center: const Alignment(0, 0.1),
+                        radius: bgRadius,
+                        colors: [
+                          Colors.greenAccent.withValues(alpha: bgOpacity.clamp(0.0, 1.0)),
+                          Colors.black,
+                        ],
                       ),
+                    ),
+                  );
+                },
               ),
             ),
           ),
 
+          Positioned.fill(
+            child: IgnorePointer(
+              child: RepaintBoundary(
+                child: Center(
+                  child: Icon(
+                    Icons.adjust,
+                    size: 350,
+                    color: Colors.greenAccent.withValues(alpha: 0.03),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // 2. 3D ModelViewer (Locked when Spin Mode is OFF, Zooms in smoothly when holding)
+          Positioned.fill(
+            child: IgnorePointer(
+              ignoring: !_spinMode,
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: (_) {
+                  _spinDragAccumulator = 0.0;
+                  if (_spinMode) {
+                    _LanternHaptics.spinDetent(velocity: 0.8);
+                  }
+                },
+                onPointerMove: (e) {
+                  if (!_spinMode) return;
+                  final double delta = e.delta.distance;
+                  _spinDragAccumulator += delta;
+                  if (_spinDragAccumulator >= 50.0) {
+                    _spinDragAccumulator %= 50.0;
+                    _LanternHaptics.spinDetent(velocity: (delta / 8.0).clamp(0.4, 3.0));
+                  }
+                },
+                child: AnimatedScale(
+                  scale: isListeningForOath ? 1.15 : 1.0,
+                  duration: const Duration(milliseconds: 600),
+                  curve: Curves.easeOutCubic,
+                  child: RepaintBoundary(
+                    child: !_prefsReady
+                        ? const SizedBox.shrink()
+                        : ModelViewer(
+                            key: ValueKey('${_lantern.id}_$_currentQuality'),
+                            src: _currentModelPath,
+                            alt: 'Power Battery',
+                            autoRotate: _initialSpin,
+                            autoRotateDelay: 0,
+                            rotationPerSecond: '20deg',
+                            cameraOrbit: _lantern.cameraOrbit,
+                            fieldOfView: _lantern.fieldOfView,
+                            shadowIntensity: (_currentQuality == 'Best' || _currentQuality == 'High') ? 1 : 0,
+                            shadowSoftness: _currentQuality == 'Best' ? 1 : 0,
+                            cameraControls: true,
+                            backgroundColor: Colors.transparent,
+                            interactionPrompt: InteractionPrompt.none,
+                            relatedJs: _modelControlJsFor(_lantern.frontDeg, _currentQuality),
+                            onWebViewCreated: (controller) {
+                              _modelController = controller;
+                              _syncModelSpin();
+                            },
+                          ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // 3. Opaque Hold-to-Recite Listener when Spin Mode is OFF
           if (!_spinMode)
             Positioned.fill(
               child: Listener(
-                behavior: HitTestBehavior.translucent,
+                behavior: HitTestBehavior.opaque,
                 onPointerDown: (e) {
                   if (_isPressing) return;
                   if (!isDischarged) {
-                    // Subtle feedback tap if user touches the lantern while already charged
                     _LanternHaptics.spinDetent(velocity: 0.6);
                     return;
                   }
@@ -2508,7 +2685,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
             child: IgnorePointer(
               child: AnimatedOpacity(
                 opacity: isListeningForOath ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 300),
+                duration: const Duration(milliseconds: 250),
                 child: _buildKaraokeOathText(),
               ),
             ),
@@ -2539,7 +2716,8 @@ class _RingChargerScreenState extends State<RingChargerScreen>
                               width: 34,
                               height: 34,
                               fit: BoxFit.contain,
-                              errorBuilder: (_, _, _) => const Icon(Icons.adjust, color: Colors.greenAccent, size: 28),
+                              errorBuilder: (context, error, stackTrace) =>
+                                  const Icon(Icons.adjust, color: Colors.greenAccent, size: 28),
                             ),
                           ),
                         ),
@@ -2557,7 +2735,8 @@ class _RingChargerScreenState extends State<RingChargerScreen>
                           ),
                           const SizedBox(width: 8),
                           Container(
-                            width: 8, height: 8,
+                            width: 8,
+                            height: 8,
                             decoration: BoxDecoration(
                               color: isListeningForOath ? Colors.white : Colors.greenAccent,
                               shape: BoxShape.circle,
@@ -2593,11 +2772,13 @@ class _RingChargerScreenState extends State<RingChargerScreen>
                               _restartRing();
                             } else if (value == 2) {
                               setState(() => _spinMode = !_spinMode);
+                              unawaited(_syncModelSpin());
                             } else if (value == 3) {
                               setState(() {
                                 _autoRotateModel = !_autoRotateModel;
                                 _saveData();
                               });
+                              unawaited(_syncModelSpin());
                             } else if (value == 4) {
                               setState(() {
                                 _tutorialStep = 0;
@@ -2607,7 +2788,7 @@ class _RingChargerScreenState extends State<RingChargerScreen>
                           },
                           itemBuilder: (context) {
                             List<PopupMenuEntry<int>> menuItems = [];
-                            
+
                             if (isDischarged) {
                               menuItems.addAll([
                                 PopupMenuItem(
@@ -2705,15 +2886,59 @@ class _RingChargerScreenState extends State<RingChargerScreen>
                               ),
                             ]);
 
-                            // 🟢 ADDING YOUR SIGNATURE HERE
+                            // QUALITY DROPDOWN UI
+                            menuItems.addAll([
+                              const PopupMenuDivider(height: 1),
+                              PopupMenuItem(
+                                enabled: false,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text('SELECT QUALITY:', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                                    const SizedBox(height: 4),
+                                    DropdownButton<String>(
+                                      value: _currentQuality,
+                                      isExpanded: true,
+                                      dropdownColor: const Color(0xFF0F1A15),
+                                      style: const TextStyle(color: Colors.white),
+                                      items: ['Low', 'Medium', 'High', 'Best'].map((String value) {
+                                        return DropdownMenuItem<String>(
+                                          value: value,
+                                          child: Text(value),
+                                        );
+                                      }).toList(),
+                                      onChanged: (String? newValue) {
+                                        if (newValue != null && newValue != _currentQuality) {
+                                          _LanternHaptics.toggle();
+                                          setState(() {
+                                            _currentQuality = newValue;
+                                            _modelController = null;
+                                            _spinSyncRetry?.cancel();
+                                            _syncTarget = null;
+                                            _syncTries = 0;
+                                            _initialSpin = _shouldSpin;
+                                            _appliedSpin = _initialSpin;
+                                          });
+                                          prefs?.setString('graphicsQuality', newValue);
+                                          if (context.mounted) Navigator.pop(context);
+                                        }
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ]);
+
+                            // STUDIO SIGNATURE
                             menuItems.addAll([
                               const PopupMenuDivider(height: 1),
                               const PopupMenuItem(
                                 enabled: false,
-                                height: 35, // Keeps it compact
+                                height: 35,
                                 child: Center(
                                   child: Text(
-                                    'Developed By - Saqib Mukadam/SM Labs', 
+                                    'Developed By - Saqib Mukadam/SM Labs',
                                     style: TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold),
                                     textAlign: TextAlign.center,
                                   ),
@@ -2730,54 +2955,67 @@ class _RingChargerScreenState extends State<RingChargerScreen>
                 ),
 
                 IgnorePointer(
-                  child: AnimatedBuilder(
-                    animation: _blinkController,
-                    builder: (context, child) {
-                      bool isLowBattery = chargeLevel > 0 && chargeLevel <= 10.0;
-                      
-                      Color baseColor = (isDischarged || isLowBattery) ? Colors.redAccent : Colors.white;
-                      Color glowColor = (isDischarged || isLowBattery) ? Colors.redAccent.withValues(alpha: 0.8) : Colors.greenAccent.withValues(alpha: 0.8);
-                      Color remainingColor = (isDischarged || isLowBattery) ? Colors.redAccent : Colors.greenAccent;
-                      
-                      double currentOpacity = isLowBattery ? _blinkController.value : 1.0;
+                  child: RepaintBoundary(
+                    child: AnimatedBuilder(
+                      animation: _headerListenable,
+                      builder: (context, child) {
+                        final double currentCharge = _chargeNotifier.value;
+                        final bool discharged = currentCharge <= 0.0;
+                        final bool isLowBattery = currentCharge > 0 && currentCharge <= 10.0;
 
-                      return Opacity(
-                        opacity: currentOpacity,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            const SizedBox(height: 10),
-                            Text(
-                              'CORE CHARGE',
-                              style: TextStyle(color: (isDischarged || isLowBattery) ? Colors.redAccent.withValues(alpha: 0.7) : Colors.white60, fontSize: 11, letterSpacing: 3, fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${chargeLevel.ceil()}%',
-                              style: TextStyle(
-                                color: baseColor,
-                                fontSize: 56,
-                                fontWeight: FontWeight.bold,
-                                shadows: [Shadow(color: glowColor, blurRadius: 15)],
-                              ),
-                            ),
-                            if (chargeLevel > 0) ...[
-                              const SizedBox(height: 4),
+                        final Color baseColor = (discharged || isLowBattery) ? Colors.redAccent : Colors.white;
+                        final Color glowColor = (discharged || isLowBattery)
+                            ? Colors.redAccent.withValues(alpha: 0.8)
+                            : Colors.greenAccent.withValues(alpha: 0.8);
+                        final Color remainingColor = (discharged || isLowBattery) ? Colors.redAccent : Colors.greenAccent;
+
+                        final double currentOpacity = isLowBattery ? _blinkController.value : 1.0;
+
+                        return Opacity(
+                          opacity: currentOpacity,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              const SizedBox(height: 10),
                               Text(
-                                '$_formattedTime remaining',
+                                'CORE CHARGE',
                                 style: TextStyle(
-                                  color: remainingColor,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: 1.5,
-                                  shadows: const [Shadow(color: Colors.black, blurRadius: 8, offset: Offset(0, 2))],
+                                  color: (discharged || isLowBattery)
+                                      ? Colors.redAccent.withValues(alpha: 0.7)
+                                      : Colors.white60,
+                                  fontSize: 11,
+                                  letterSpacing: 3,
+                                  fontWeight: FontWeight.bold,
                                 ),
                               ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '${currentCharge.ceil()}%',
+                                style: TextStyle(
+                                  color: baseColor,
+                                  fontSize: 56,
+                                  fontWeight: FontWeight.bold,
+                                  shadows: [Shadow(color: glowColor, blurRadius: 15)],
+                                ),
+                              ),
+                              if (currentCharge > 0) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  '${_formatRemainingTime(currentCharge)} remaining',
+                                  style: TextStyle(
+                                    color: remainingColor,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 1.5,
+                                    shadows: const [Shadow(color: Colors.black, blurRadius: 8, offset: Offset(0, 2))],
+                                  ),
+                                ),
+                              ],
                             ],
-                          ],
-                        ),
-                      );
-                    },
+                          ),
+                        );
+                      },
+                    ),
                   ),
                 ),
 
@@ -2829,9 +3067,9 @@ class _RingChargerScreenState extends State<RingChargerScreen>
                                 child: Text(
                                   _instructionText(),
                                   style: TextStyle(
-                                    color: _oathDetected ? Colors.greenAccent : Colors.white60, 
-                                    fontSize: 13, 
-                                    height: 1.4
+                                    color: _oathDetected ? Colors.greenAccent : Colors.white60,
+                                    fontSize: 13,
+                                    height: 1.4,
                                   ),
                                 ),
                               ),
